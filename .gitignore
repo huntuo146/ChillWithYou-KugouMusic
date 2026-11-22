@@ -1,0 +1,20 @@
+# 默认忽略游戏本体、BepInEx 运行目录与所有个人本地数据
+/*
+
+# 仅跟踪插件/安装器源代码、文档与脚本
+!/.gitignore
+!/LICENSE
+!/README.md
+!/启动酷狗网关.bat
+!/KugouMusicMod/
+!/KugouMusicInstaller/
+
+# 排除构建中间产物、嵌入压缩荷载及 IDE 缓存
+KugouMusicMod/bin/
+KugouMusicMod/obj/
+KugouMusicInstaller/bin/
+KugouMusicInstaller/obj/
+KugouMusicInstaller/Assets/
+*.user
+*.suo
+.vs/

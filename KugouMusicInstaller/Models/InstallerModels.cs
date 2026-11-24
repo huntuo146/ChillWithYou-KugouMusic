@@ -5,7 +5,7 @@ namespace ChillWithYou.KugouMusic.Installer.Models
 {
     public static class InstallerConstants
     {
-        public const string InstallerVersion = "1.0.0";
+        public const string InstallerVersion = "1.0.1";
         public const string DefaultGitHubRepo = "huntuo146/ChillWithYou-KugouMusic";
         public const string SteamAppId = "3548580";
         public const string SteamFolderName = "Chill with You Lo-Fi Story";

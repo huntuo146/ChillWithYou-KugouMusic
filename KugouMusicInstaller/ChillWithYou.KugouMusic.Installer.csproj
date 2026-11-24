@@ -8,9 +8,9 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>ChillWithYou-KugouMusic-Installer</AssemblyName>
     <RootNamespace>ChillWithYou.KugouMusic.Installer</RootNamespace>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>1.0.1.0</FileVersion>
     <Product>Chill with You - Kugou Music Bridge Installer</Product>
     <Description>Chill with You Lo-Fi Story 酷狗音乐双音源插件自动安装与更新器</Description>
     <Deterministic>true</Deterministic>

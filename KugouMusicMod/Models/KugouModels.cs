@@ -10,7 +10,7 @@ namespace ChillWithYou.KugouMusic.Models
     {
         public const string PluginGuid = "chillwithyou.kugoumusic";
         public const string PluginName = "Chill with You - Kugou Music Bridge";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.0.1";
         public const string DefaultGitHubRepo = "huntuo146/ChillWithYou-KugouMusic";
         public const string SteamAppId = "3548580";
 

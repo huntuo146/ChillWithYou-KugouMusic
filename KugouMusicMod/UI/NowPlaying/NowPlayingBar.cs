@@ -43,7 +43,7 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
                 coverSize: 240);
 
             float infoX = coverRect.xMax + 12f;
-            float titleW = 236f;
+            float titleW = 216f;
             float singerW = 190f;
             if (Event.current != null && Event.current.type == EventType.Repaint)
             {
@@ -81,7 +81,14 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
 
             var playRect = new Rect(centerX - 18f, r.y + 8f, 36f, 36f);
             var prevRect = new Rect(playRect.x - 36f, r.y + 12f, 28f, 28f);
+            var shuffleRect = new Rect(prevRect.x - 36f, r.y + 12f, 28f, 28f);
             var nextRect = new Rect(playRect.xMax + 8f, r.y + 12f, 28f, 28f);
+            var repeatRect = new Rect(nextRect.xMax + 8f, r.y + 12f, 28f, 28f);
+
+            if (KugouWidgets.IconButton(shuffleRect, IconCode.Shuffle, model.IsShuffle, controlsEnabled, 13))
+            {
+                model.ToggleShuffle();
+            }
 
             if (KugouWidgets.IconButton(prevRect, IconCode.Prev, false, controlsEnabled, 13))
             {
@@ -96,6 +103,12 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
             if (KugouWidgets.IconButton(nextRect, IconCode.Next, false, controlsEnabled, 13))
             {
                 model.NextTrack();
+            }
+
+            IconCode repeatIcon = model.IsRepeatOne ? IconCode.RepeatOne : IconCode.RepeatAll;
+            if (KugouWidgets.IconButton(repeatRect, repeatIcon, model.IsRepeatOne, controlsEnabled, 13))
+            {
+                model.ToggleRepeat();
             }
 
             // 细进度条与时间
@@ -174,13 +187,15 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
                 trackForAutoResolve: model.CurrentTrack,
                 coverSize: 240);
 
-            var expandRect = new Rect(cardRect.xMax - 38f, cardRect.y + 24f, 28f, 28f);
-            var nextRect = new Rect(expandRect.x - 32f, cardRect.y + 24f, 28f, 28f);
-            var playRect = new Rect(nextRect.x - 38f, cardRect.y + 20f, 34f, 34f);
-            var prevRect = new Rect(playRect.x - 32f, cardRect.y + 24f, 28f, 28f);
+            var expandRect = new Rect(cardRect.xMax - 36f, cardRect.y + 25f, 26f, 26f);
+            var repeatRect = new Rect(expandRect.x - 30f, cardRect.y + 25f, 26f, 26f);
+            var nextRect = new Rect(repeatRect.x - 30f, cardRect.y + 25f, 26f, 26f);
+            var playRect = new Rect(nextRect.x - 38f, cardRect.y + 21f, 34f, 34f);
+            var prevRect = new Rect(playRect.x - 30f, cardRect.y + 25f, 26f, 26f);
+            var shuffleRect = new Rect(prevRect.x - 30f, cardRect.y + 25f, 26f, 26f);
 
             float textX = coverRect.xMax + 12f;
-            float textW = Mathf.Max(40f, prevRect.x - textX - 8f);
+            float textW = Mathf.Max(40f, shuffleRect.x - textX - 8f);
             if (Event.current != null && Event.current.type == EventType.Repaint)
             {
                 GUIStyle tSt = KugouTheme.Style(TypeToken.BodyStrong, KugouTheme.Colors.TextPrimary, TextAnchor.MiddleLeft);
@@ -197,6 +212,11 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
             }
 
             bool controlsEnabled = model.ServiceReady;
+            if (KugouWidgets.IconButton(shuffleRect, IconCode.Shuffle, model.IsShuffle, controlsEnabled, 12))
+            {
+                model.ToggleShuffle();
+            }
+
             if (KugouWidgets.IconButton(prevRect, IconCode.Prev, false, controlsEnabled, 12))
             {
                 model.PrevTrack();
@@ -212,6 +232,12 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
                 model.NextTrack();
             }
 
+            IconCode miniRepeatIcon = model.IsRepeatOne ? IconCode.RepeatOne : IconCode.RepeatAll;
+            if (KugouWidgets.IconButton(repeatRect, miniRepeatIcon, model.IsRepeatOne, controlsEnabled, 12))
+            {
+                model.ToggleRepeat();
+            }
+
             if (KugouWidgets.IconButton(expandRect, IconCode.Expand, false, true, 13))
             {
                 if (onExpand != null)
@@ -220,7 +246,7 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
                 }
             }
 
-            dragArea = new Rect(cardRect.x, cardRect.y, prevRect.x - cardRect.x - 4f, cardRect.height);
+            dragArea = new Rect(cardRect.x, cardRect.y, shuffleRect.x - cardRect.x - 4f, cardRect.height);
         }
 
         private static bool DrawMainPlayButton(Rect r, bool isPlaying, bool enabled)

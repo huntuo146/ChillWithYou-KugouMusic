@@ -297,7 +297,7 @@ namespace ChillWithYou.KugouMusic.Services
 
                 if (entry != null)
                 {
-                    service.PlayArugumentMusic(entry, MusicChangeKind.Manual);
+                    PlayTrackEntry(service, entry);
                     return true;
                 }
             }
@@ -346,11 +346,13 @@ namespace ChillWithYou.KugouMusic.Services
                 // 先摘掉上一轮酷狗曲目的运行时 AudioClip，避免 Load 期间残留
                 CleanupKugouClips(service);
 
+                bool wasShuffle = service.IsShuffle;
                 List<GameAudioInfo> list = BuildKugouEntries();
                 service.Load(list);
 
                 IsKugouMode = true;
                 Plugin.ActiveSource.Value = "Kugou";
+                SyncShuffleAndLoopAfterLoad(service, wasShuffle);
                 RefreshVisiblePlaylist();
                 ApplyImportButtonState(true);
 
@@ -359,7 +361,7 @@ namespace ChillWithYou.KugouMusic.Services
                     GameAudioInfo target = FindEntry(explicitPlayUuid);
                     if (target != null)
                     {
-                        service.PlayArugumentMusic(target, MusicChangeKind.Manual);
+                        PlayTrackEntry(service, target);
                         Plugin.Log.LogInfo("[Switch] 已切歌单并起播: " + target.Title);
                     }
                     else
@@ -421,10 +423,12 @@ namespace ChillWithYou.KugouMusic.Services
                     return;
                 }
 
+                bool wasShuffle = service.IsShuffle;
                 service.Load(_officialList);
                 IsKugouMode = false;
                 Plugin.ActiveSource.Value = "Official";
                 RestoreOfficialClips();
+                SyncShuffleAndLoopAfterLoad(service, wasShuffle);
                 RefreshVisiblePlaylist();
                 ApplyImportButtonState(false);
                 TryResumePlayback(service, wasPlaying, false);
@@ -563,6 +567,67 @@ namespace ChillWithYou.KugouMusic.Services
             {
                 Plugin.Log.LogWarning("[Switch] 刷新界面状态失败: " + ex.Message);
             }
+        }
+
+        private static readonly MethodInfo ChangeShuffleUiMethod =
+            AccessTools.Method(typeof(FacilityMusic), "ChangeShuffleUI", new[] { typeof(bool) });
+
+        private static readonly MethodInfo ChangeLoopUiMethod =
+            AccessTools.Method(typeof(FacilityMusic), "ChangeLoopUI", new[] { typeof(bool) });
+
+        private static void SyncShuffleAndLoopAfterLoad(MusicService service, bool wasShuffle)
+        {
+            if (service == null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (wasShuffle && !service.IsShuffle)
+                {
+                    service.SetShuffle(true);
+                }
+
+                FacilityMusic facility = Plugin.FacilityMusicInstance;
+                if (facility != null)
+                {
+                    ChangeShuffleUiMethod?.Invoke(facility, new object[] { service.IsShuffle });
+                    ChangeLoopUiMethod?.Invoke(facility, new object[] { service.IsRepeatOneMusic });
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning("[Switch] 同步随机/循环状态失败: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// 统一经由 FacilityMusic 触发点播，保持游戏原生 _mainState 与播放/暂停按钮状态同步，
+        /// 避免插件播放控制与游戏内按钮产生冲突。
+        /// </summary>
+        internal static void PlayTrackEntry(MusicService service, GameAudioInfo entry)
+        {
+            if (service == null || entry == null)
+            {
+                return;
+            }
+
+            try
+            {
+                FacilityMusic facility = Plugin.FacilityMusicInstance;
+                if (facility != null)
+                {
+                    facility.OnClickButtonPlayListPlayMusicButton(entry);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning("[Switch] 经由 FacilityMusic 起播失败，回退直连播放: " + ex.Message);
+            }
+
+            service.PlayArugumentMusic(entry, MusicChangeKind.Manual);
         }
 
         private void CleanupKugouClips(MusicService service)
@@ -878,7 +943,7 @@ namespace ChillWithYou.KugouMusic.Services
                     return;
                 }
 
-                service.PlayArugumentMusic(target, MusicChangeKind.Manual);
+                PlayTrackEntry(service, target);
                 Plugin.Log.LogInfo("[Switch] 已自动恢复播放: " + target.Title);
             }
             catch (Exception ex)
@@ -1285,6 +1350,16 @@ namespace ChillWithYou.KugouMusic.Services
     {
         private static readonly object Gate = new object();
         private static CancellationTokenSource _cts;
+        private static GameAudioInfo _pendingInfo;
+
+        internal static bool TryGetPendingInfo(out GameAudioInfo info)
+        {
+            lock (Gate)
+            {
+                info = _pendingInfo;
+                return _cts != null && info != null;
+            }
+        }
 
         public static void RequestPlay(MusicService service, GameAudioInfo info, MusicChangeKind kind)
         {
@@ -1294,17 +1369,23 @@ namespace ChillWithYou.KugouMusic.Services
                 track = null;
             }
 
-            CancellationToken token = NextToken();
+            CancellationToken token = BeginPending(info);
             PlayAsync(service, info, track, kind, token).Forget();
         }
 
         public static void RequestPlayIndex(MusicService service, int index)
         {
-            CancellationToken token = NextToken();
+            GameAudioInfo info = null;
+            if (service != null && service.CurrentPlayList != null && index >= 0 && index < service.CurrentPlayList.Count)
+            {
+                info = service.CurrentPlayList[index];
+            }
+
+            CancellationToken token = BeginPending(info);
             PlayIndexAsync(service, index, token).Forget();
         }
 
-        private static CancellationToken NextToken()
+        private static CancellationToken BeginPending(GameAudioInfo info)
         {
             lock (Gate)
             {
@@ -1322,7 +1403,19 @@ namespace ChillWithYou.KugouMusic.Services
                 }
 
                 _cts = new CancellationTokenSource();
+                _pendingInfo = info;
                 return _cts.Token;
+            }
+        }
+
+        private static void ClearPending(CancellationToken ct)
+        {
+            lock (Gate)
+            {
+                if (_cts != null && _cts.Token == ct)
+                {
+                    _pendingInfo = null;
+                }
             }
         }
 
@@ -1343,6 +1436,7 @@ namespace ChillWithYou.KugouMusic.Services
 
                 if (clip == null)
                 {
+                    ClearPending(ct);
                     HandleLoadFailure(service, info);
                     return;
                 }
@@ -1353,6 +1447,7 @@ namespace ChillWithYou.KugouMusic.Services
                     return;
                 }
 
+                ClearPending(ct);
                 // 重新进入原方法：此时 AudioClip 已就绪，Prefix 自然放行
                 MusicPatchTargets.InvokePlayArugumentMusic(service, info, kind);
                 Plugin.Log.LogInfo("[Hook] 延迟播放完成: " + info.Title);
@@ -1361,10 +1456,12 @@ namespace ChillWithYou.KugouMusic.Services
             }
             catch (OperationCanceledException)
             {
+                ClearPending(ct);
                 // 连点取消，静默
             }
             catch (Exception ex)
             {
+                ClearPending(ct);
                 Plugin.Log.LogError("[Hook] 延迟播放失败: " + ex);
             }
         }
@@ -1379,6 +1476,7 @@ namespace ChillWithYou.KugouMusic.Services
                 var list = service.CurrentPlayList;
                 if (list == null || index < 0 || index >= list.Count)
                 {
+                    ClearPending(ct);
                     return;
                 }
 
@@ -1386,6 +1484,7 @@ namespace ChillWithYou.KugouMusic.Services
                 KugouTrack track;
                 if (!Plugin.Registry.TryGet(info, out track))
                 {
+                    ClearPending(ct);
                     return;
                 }
 
@@ -1397,6 +1496,7 @@ namespace ChillWithYou.KugouMusic.Services
 
                 if (clip == null)
                 {
+                    ClearPending(ct);
                     HandleLoadFailure(service, info);
                     return;
                 }
@@ -1407,6 +1507,7 @@ namespace ChillWithYou.KugouMusic.Services
                     return;
                 }
 
+                ClearPending(ct);
                 MusicPatchTargets.InvokePlayMusicInPlaylist(service, index);
                 Plugin.Log.LogInfo("[Hook] 延迟列表播放完成: index=" + index);
 
@@ -1414,9 +1515,11 @@ namespace ChillWithYou.KugouMusic.Services
             }
             catch (OperationCanceledException)
             {
+                ClearPending(ct);
             }
             catch (Exception ex)
             {
+                ClearPending(ct);
                 Plugin.Log.LogError("[Hook] 延迟列表播放失败: " + ex);
             }
         }
@@ -1520,21 +1623,46 @@ namespace ChillWithYou.KugouMusic.Services
                 return;
             }
 
+            CancelPending();
+
             try
             {
                 GameAudioInfo playing = service.PlayingMusic;
                 if (playing != null && playing.AudioClip == null)
                 {
                     MusicPatchTargets.ClearPlayingMusic(service);
+                    SyncFacilityPausedIfNotSwitching();
                     return;
                 }
 
                 service.Stop();
+                SyncFacilityPausedIfNotSwitching();
             }
             catch (Exception ex)
             {
                 Plugin.Log.LogWarning("[Hook] 停播失败（可忽略）: " + ex.Message);
                 MusicPatchTargets.ClearPlayingMusic(service);
+                SyncFacilityPausedIfNotSwitching();
+            }
+        }
+
+        private static void SyncFacilityPausedIfNotSwitching()
+        {
+            if (Plugin.Switch != null && Plugin.Switch.IsSwitching)
+            {
+                return;
+            }
+
+            try
+            {
+                FacilityMusic facility = Plugin.FacilityMusicInstance;
+                if (facility != null && !facility.IsPaused)
+                {
+                    facility.PauseMusic();
+                }
+            }
+            catch
+            {
             }
         }
 
@@ -1569,6 +1697,7 @@ namespace ChillWithYou.KugouMusic.Services
         {
             lock (Gate)
             {
+                _pendingInfo = null;
                 if (_cts == null)
                 {
                     return;

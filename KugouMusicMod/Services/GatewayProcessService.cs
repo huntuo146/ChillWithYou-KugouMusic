@@ -3,7 +3,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using BepInEx;
 using ChillWithYou.KugouMusic.Models;
@@ -24,15 +26,23 @@ namespace ChillWithYou.KugouMusic.Services
     /// <summary>
     /// 托管本地 KuGouMusicApi（Node.js）网关进程：
     /// - 游戏启动或切到 ExternalGateway 时自动检查端口并在后台静默拉起 `node app.js`；
-    /// - 若端口已被手动启动的 `启动酷狗网关.bat` 占用，则直接复用且退出时不关闭外部窗口；
+    /// - 若配置端口（如 3000）被系统 Hyper-V 保留、处于 Bound 状态或被其它软件占导致 EACCES/EADDRINUSE，自动顺延可用本地端口；
+    /// - 若端口已被手动启动的 `启动酷狗网关.bat` 占用且在监听，则直接复用且退出时不关闭外部窗口；
     /// - 仅关闭由插件自己启动的网关进程，避免残留后台进程。
     /// </summary>
     internal sealed class GatewayProcessService
     {
+        private static readonly Regex RunningPortRegex = new Regex(
+            @"server\s+running\s+@\s+https?://[^:\s]+:(\d+)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         private readonly object _gate = new object();
         private Process _process;
         private bool _ownedByPlugin;
-        private int _targetPort = 3000;
+        private int _configuredPort = 3000;
+        private int _activePort = 3000;
+        private string _activeHost = "127.0.0.1";
+        private bool _usedFallbackPort;
         private DateTime _startedUtc = DateTime.MinValue;
         private bool _warnedMissing;
         private DateTime _lastStatusProbeUtc = DateTime.MinValue;
@@ -47,6 +57,35 @@ namespace ChillWithYou.KugouMusic.Services
                     return _ownedByPlugin && _process != null && !_process.HasExited;
                 }
             }
+        }
+
+        public string ResolveEffectiveBaseUrl(string configuredUrl)
+        {
+            string normalized = string.IsNullOrEmpty(configuredUrl)
+                ? "http://127.0.0.1:3000"
+                : configuredUrl.Trim().TrimEnd('/');
+
+            string host;
+            int port;
+            if (!TryParseLocalEndpoint(normalized, out host, out port))
+            {
+                return normalized;
+            }
+
+            lock (_gate)
+            {
+                if (_ownedByPlugin &&
+                    _process != null &&
+                    !_process.HasExited &&
+                    port == _configuredPort &&
+                    _activePort > 0 &&
+                    _activePort != port)
+                {
+                    return "http://" + _activeHost + ":" + _activePort;
+                }
+            }
+
+            return normalized;
         }
 
         public bool EnsureStarted(bool force = false)
@@ -71,14 +110,21 @@ namespace ChillWithYou.KugouMusic.Services
 
             lock (_gate)
             {
-                _targetPort = port;
-
                 if (_process != null && !_process.HasExited)
                 {
-                    return true;
+                    if (!force && _configuredPort == port)
+                    {
+                        return true;
+                    }
+
+                    StopOwnedLocked();
                 }
 
                 DisposeProcessLocked();
+                _configuredPort = port;
+                _activeHost = host;
+                _activePort = port;
+                _usedFallbackPort = false;
 
                 if (IsPortListening(port))
                 {
@@ -111,6 +157,20 @@ namespace ChillWithYou.KugouMusic.Services
                     return false;
                 }
 
+                int launchPort = PickBindablePort(host, port);
+                if (launchPort <= 0)
+                {
+                    LogWarn("[Gateway] 无法为本地网关分配可用端口（" + port + " 及后续端口均受限/被占用）");
+                    return false;
+                }
+
+                _activePort = launchPort;
+                _usedFallbackPort = launchPort != port;
+                if (_usedFallbackPort)
+                {
+                    LogInfo("[Gateway] 默认端口 " + port + " 被系统或其它程序占用/受限 (Bound/EACCES)，已自动切换至端口 " + launchPort);
+                }
+
                 try
                 {
                     var psi = new ProcessStartInfo
@@ -127,7 +187,7 @@ namespace ChillWithYou.KugouMusic.Services
                         StandardErrorEncoding = Encoding.UTF8,
                     };
 
-                    psi.EnvironmentVariables["PORT"] = port.ToString();
+                    psi.EnvironmentVariables["PORT"] = launchPort.ToString();
                     psi.EnvironmentVariables["HOST"] = host;
 
                     var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
@@ -149,7 +209,7 @@ namespace ChillWithYou.KugouMusic.Services
                     _startedUtc = DateTime.UtcNow;
                     _warnedMissing = false;
 
-                    LogInfo("[Gateway] 已随游戏启动本地 KuGouMusicApi 网关（PID=" + proc.Id + ", http://" + host + ":" + port + "）");
+                    LogInfo("[Gateway] 已随游戏启动本地 KuGouMusicApi 网关（PID=" + proc.Id + ", http://" + host + ":" + launchPort + "）");
                     return true;
                 }
                 catch (Exception ex)
@@ -170,30 +230,39 @@ namespace ChillWithYou.KugouMusic.Services
         {
             lock (_gate)
             {
-                if (!_ownedByPlugin || _process == null)
-                {
-                    return;
-                }
+                StopOwnedLocked();
+            }
+        }
 
-                try
+        private void StopOwnedLocked()
+        {
+            if (!_ownedByPlugin || _process == null)
+            {
+                DisposeProcessLocked();
+                _ownedByPlugin = false;
+                _usedFallbackPort = false;
+                return;
+            }
+
+            try
+            {
+                if (!_process.HasExited)
                 {
-                    if (!_process.HasExited)
-                    {
-                        int pid = _process.Id;
-                        _process.Kill();
-                        _process.WaitForExit(1500);
-                        LogInfo("[Gateway] 已关闭随游戏启动的本地网关（PID=" + pid + "）");
-                    }
+                    int pid = _process.Id;
+                    _process.Kill();
+                    _process.WaitForExit(1500);
+                    LogInfo("[Gateway] 已关闭随游戏启动的本地网关（PID=" + pid + "）");
                 }
-                catch (Exception ex)
-                {
-                    LogWarn("[Gateway] 关闭本地网关失败: " + ex.Message);
-                }
-                finally
-                {
-                    DisposeProcessLocked();
-                    _ownedByPlugin = false;
-                }
+            }
+            catch (Exception ex)
+            {
+                LogWarn("[Gateway] 关闭本地网关失败: " + ex.Message);
+            }
+            finally
+            {
+                DisposeProcessLocked();
+                _ownedByPlugin = false;
+                _usedFallbackPort = false;
             }
         }
 
@@ -207,6 +276,14 @@ namespace ChillWithYou.KugouMusic.Services
             if (!TryParseLocalEndpoint(requestUrl, out host, out port))
             {
                 return;
+            }
+
+            lock (_gate)
+            {
+                if (_ownedByPlugin && port == _configuredPort && _activePort > 0)
+                {
+                    port = _activePort;
+                }
             }
 
             if (IsPortListening(port))
@@ -230,7 +307,16 @@ namespace ChillWithYou.KugouMusic.Services
 
             for (int i = 0; i < 75; i++)
             {
-                if (ct.IsCancellationRequested || IsPortListening(port))
+                int currentTarget = port;
+                lock (_gate)
+                {
+                    if (_ownedByPlugin && _activePort > 0)
+                    {
+                        currentTarget = _activePort;
+                    }
+                }
+
+                if (ct.IsCancellationRequested || IsPortListening(currentTarget))
                 {
                     return;
                 }
@@ -257,14 +343,17 @@ namespace ChillWithYou.KugouMusic.Services
                 return GatewayState.Remote;
             }
 
+            bool owned = IsOwnedRunning;
+            int probePort = owned && _activePort > 0 ? _activePort : port;
+
             DateTime now = DateTime.UtcNow;
             if ((now - _lastStatusProbeUtc).TotalMilliseconds >= 500.0)
             {
-                _cachedListening = IsPortListening(port);
+                _cachedListening = IsPortListening(probePort);
                 _lastStatusProbeUtc = now;
             }
 
-            if (IsOwnedRunning)
+            if (owned)
             {
                 return _cachedListening ? GatewayState.RunningOwned : GatewayState.Starting;
             }
@@ -282,14 +371,20 @@ namespace ChillWithYou.KugouMusic.Services
                 return "远程网关（不托管本地进程）";
             }
 
+            bool owned = IsOwnedRunning;
+            int showPort = owned && _activePort > 0 ? _activePort : port;
+            string fallbackNote = (owned && _usedFallbackPort && showPort != port)
+                ? ("，原 " + port + " 被占用")
+                : string.Empty;
+
             switch (GetState())
             {
                 case GatewayState.RunningOwned:
-                    return "运行中（随游戏启动，端口 " + port + "）";
+                    return "运行中（随游戏启动，端口 " + showPort + fallbackNote + "）";
                 case GatewayState.Starting:
-                    return "启动中（端口 " + port + "）";
+                    return "启动中（端口 " + showPort + fallbackNote + "）";
                 case GatewayState.RunningExternal:
-                    return "运行中（外部启动，端口 " + port + "）";
+                    return "运行中（外部启动，端口 " + showPort + "）";
                 default:
                     return "未运行（端口 " + port + "）";
             }
@@ -314,6 +409,82 @@ namespace ChillWithYou.KugouMusic.Services
             }
 
             return false;
+        }
+
+        private static bool CanBindLocalPort(string host, int port)
+        {
+            if (port <= 0 || port > 65535)
+            {
+                return false;
+            }
+
+            IPAddress addr;
+            if (!IPAddress.TryParse(host, out addr))
+            {
+                addr = IPAddress.Loopback;
+            }
+
+            TcpListener probe = null;
+            try
+            {
+                probe = new TcpListener(addr, port);
+                probe.Server.ExclusiveAddressUse = true;
+                probe.Start();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (probe != null)
+                {
+                    try { probe.Stop(); } catch { }
+                }
+            }
+        }
+
+        private static int PickBindablePort(string host, int preferredPort)
+        {
+            if (CanBindLocalPort(host, preferredPort))
+            {
+                return preferredPort;
+            }
+
+            for (int candidate = preferredPort + 1; candidate <= preferredPort + 30 && candidate <= 65535; candidate++)
+            {
+                if (!IsPortListening(candidate) && CanBindLocalPort(host, candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            TcpListener ephemeral = null;
+            try
+            {
+                IPAddress addr;
+                if (!IPAddress.TryParse(host, out addr))
+                {
+                    addr = IPAddress.Loopback;
+                }
+
+                ephemeral = new TcpListener(addr, 0);
+                ephemeral.Server.ExclusiveAddressUse = true;
+                ephemeral.Start();
+                return ((IPEndPoint)ephemeral.LocalEndpoint).Port;
+            }
+            catch
+            {
+                return 0;
+            }
+            finally
+            {
+                if (ephemeral != null)
+                {
+                    try { ephemeral.Stop(); } catch { }
+                }
+            }
         }
 
         public static bool TryParseLocalEndpoint(string url, out string host, out int port)
@@ -449,7 +620,7 @@ namespace ChillWithYou.KugouMusic.Services
             _process = null;
         }
 
-        private static void OnStdout(object sender, DataReceivedEventArgs e)
+        private void OnStdout(object sender, DataReceivedEventArgs e)
         {
             if (e == null || string.IsNullOrEmpty(e.Data))
             {
@@ -462,9 +633,27 @@ namespace ChillWithYou.KugouMusic.Services
                 return;
             }
 
+            Match m = RunningPortRegex.Match(line);
+            if (m.Success)
+            {
+                int actualPort;
+                if (int.TryParse(m.Groups[1].Value, out actualPort) && actualPort > 0)
+                {
+                    lock (_gate)
+                    {
+                        if (_ownedByPlugin)
+                        {
+                            _activePort = actualPort;
+                            _usedFallbackPort = actualPort != _configuredPort;
+                        }
+                    }
+                }
+            }
+
             bool verbose = Plugin.EnableVerboseLog != null && Plugin.EnableVerboseLog.Value;
-            if (line.IndexOf("server running", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            if (m.Success ||
                 line.IndexOf("[ERR]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                line.IndexOf("[WARN]", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 verbose)
             {
                 LogInfo("[Gateway] " + line);

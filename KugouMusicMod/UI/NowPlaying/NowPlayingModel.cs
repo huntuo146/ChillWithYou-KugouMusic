@@ -21,6 +21,8 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
         public bool ServiceReady { get; private set; }
         public bool HasTrack { get; private set; }
         public bool IsPlaying { get; private set; }
+        public bool IsShuffle { get; private set; }
+        public bool IsRepeatOne { get; private set; }
         public bool IsKugouTrack { get; private set; }
         public bool IsKugouSource { get; private set; }
         public KugouTrack CurrentTrack { get; private set; }
@@ -56,6 +58,8 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
             {
                 HasTrack = false;
                 IsPlaying = false;
+                IsShuffle = false;
+                IsRepeatOne = false;
                 IsKugouTrack = false;
                 CurrentTrack = null;
                 Title = "等待进入房间";
@@ -65,9 +69,33 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
                 return;
             }
 
+            IsShuffle = service.IsShuffle;
+            IsRepeatOne = service.IsRepeatOneMusic;
+
+            bool paused = facility != null && facility.IsPaused;
+            GameAudioInfo pendingInfo = null;
+            bool hasPending = !paused &&
+                              KugouPlayback.TryGetPendingInfo(out pendingInfo) &&
+                              pendingInfo != null;
+
             GameAudioInfo playing = service.PlayingMusic;
             if (playing == null)
             {
+                if (hasPending)
+                {
+                    ApplyTrackMeta(pendingInfo, out KugouTrack pendingTrack, out bool pendingKugou);
+                    HasTrack = true;
+                    IsPlaying = true;
+                    IsKugouTrack = pendingKugou;
+                    CurrentTrack = pendingTrack;
+                    Singer = string.IsNullOrEmpty(Singer) ? "正在缓冲音频..." : ("正在缓冲 · " + Singer);
+                    float pendingDur = pendingKugou && pendingTrack != null && pendingTrack.DurationSeconds > 0
+                        ? pendingTrack.DurationSeconds
+                        : 0f;
+                    UpdateTimeTexts(0f, pendingDur);
+                    return;
+                }
+
                 HasTrack = false;
                 IsPlaying = false;
                 IsKugouTrack = false;
@@ -79,26 +107,24 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
                 return;
             }
 
+            GameAudioInfo displayInfo = hasPending ? pendingInfo : playing;
+            bool switchingPending = hasPending && !ReferenceEquals(displayInfo, playing);
+
             HasTrack = true;
-            KugouTrack track = null;
-            IsKugouTrack = Plugin.Registry != null && Plugin.Registry.TryGet(playing, out track) && track != null;
-            CurrentTrack = IsKugouTrack ? track : null;
+            ApplyTrackMeta(displayInfo, out KugouTrack track, out bool isKugou);
+            IsKugouTrack = isKugou;
+            CurrentTrack = track;
+            if (switchingPending)
+            {
+                Singer = string.IsNullOrEmpty(Singer) ? "正在缓冲音频..." : ("正在缓冲 · " + Singer);
+            }
 
-            Title = IsKugouTrack
-                ? track.GetDisplayName()
-                : (string.IsNullOrEmpty(playing.Title) ? "未知曲目" : playing.Title);
-            Singer = IsKugouTrack
-                ? track.GetDisplaySinger()
-                : (string.IsNullOrEmpty(playing.Credit) ? "官方音轨" : playing.Credit);
-            CoverUrl = IsKugouTrack && !string.IsNullOrEmpty(track.CoverUrl) ? track.CoverUrl : string.Empty;
-
-            bool paused = facility != null && facility.IsPaused;
             float played = 0f;
-            float duration = IsKugouTrack && track.DurationSeconds > 0 ? track.DurationSeconds : 0f;
+            float duration = IsKugouTrack && track != null && track.DurationSeconds > 0 ? track.DurationSeconds : 0f;
 
             try
             {
-                if (playing.AudioClip != null)
+                if (!switchingPending && playing.AudioClip != null)
                 {
                     if (duration <= 0.1f)
                     {
@@ -128,8 +154,26 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
                 // 销毁或切曲瞬态忽略
             }
 
-            IsPlaying = !paused;
+            IsPlaying = switchingPending ? true : !paused;
             UpdateTimeTexts(played, duration);
+        }
+
+        private void ApplyTrackMeta(GameAudioInfo info, out KugouTrack track, out bool isKugou)
+        {
+            track = null;
+            isKugou = Plugin.Registry != null && Plugin.Registry.TryGet(info, out track) && track != null;
+            if (!isKugou)
+            {
+                track = null;
+            }
+
+            Title = isKugou
+                ? track.GetDisplayName()
+                : (string.IsNullOrEmpty(info.Title) ? "未知曲目" : info.Title);
+            Singer = isKugou
+                ? track.GetDisplaySinger()
+                : (string.IsNullOrEmpty(info.Credit) ? "官方音轨" : info.Credit);
+            CoverUrl = isKugou && !string.IsNullOrEmpty(track.CoverUrl) ? track.CoverUrl : string.Empty;
         }
 
         public void TogglePlayPause()
@@ -214,6 +258,72 @@ namespace ChillWithYou.KugouMusic.UI.NowPlaying
                 if (Plugin.Log != null)
                 {
                     Plugin.Log.LogWarning("[NowPlaying] 切上一首失败: " + ex.Message);
+                }
+            }
+        }
+
+        public void ToggleShuffle()
+        {
+            if (!ServiceReady)
+            {
+                return;
+            }
+
+            try
+            {
+                FacilityMusic facility = Plugin.FacilityMusicInstance;
+                MusicService service = Plugin.Switch != null ? Plugin.Switch.Service : null;
+                if (facility != null)
+                {
+                    facility.OnClickButtonShuffleChange();
+                }
+                else if (service != null)
+                {
+                    service.SetShuffle(!service.IsShuffle);
+                }
+
+                bool nowShuffle = service != null && service.IsShuffle;
+                IsShuffle = nowShuffle;
+                Plugin.Window?.SetStatus(nowShuffle ? "已开启随机播放" : "已切换为顺序播放", false);
+            }
+            catch (Exception ex)
+            {
+                if (Plugin.Log != null)
+                {
+                    Plugin.Log.LogWarning("[NowPlaying] 切换随机播放失败: " + ex.Message);
+                }
+            }
+        }
+
+        public void ToggleRepeat()
+        {
+            if (!ServiceReady)
+            {
+                return;
+            }
+
+            try
+            {
+                FacilityMusic facility = Plugin.FacilityMusicInstance;
+                MusicService service = Plugin.Switch != null ? Plugin.Switch.Service : null;
+                if (facility != null)
+                {
+                    facility.OnClickButtonChangeLoop();
+                }
+                else if (service != null)
+                {
+                    service.SetRepeat(!service.IsRepeatOneMusic);
+                }
+
+                bool nowRepeat = service != null && service.IsRepeatOneMusic;
+                IsRepeatOne = nowRepeat;
+                Plugin.Window?.SetStatus(nowRepeat ? "已开启单曲循环" : "已切换为列表循环", false);
+            }
+            catch (Exception ex)
+            {
+                if (Plugin.Log != null)
+                {
+                    Plugin.Log.LogWarning("[NowPlaying] 切换循环模式失败: " + ex.Message);
                 }
             }
         }

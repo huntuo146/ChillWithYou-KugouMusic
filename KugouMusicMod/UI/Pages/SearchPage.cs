@@ -451,7 +451,7 @@ namespace ChillWithYou.KugouMusic.UI.Pages
                     return;
                 }
 
-                service.PlayArugumentMusic(info, MusicChangeKind.Manual);
+                SourceSwitchService.PlayTrackEntry(service, info);
                 _ctx.SetStatus("正在播放: " + track.GetDisplayName(), false);
             }
             catch (Exception ex)

@@ -22,6 +22,9 @@ namespace ChillWithYou.KugouMusic.UI.Theme
         Pause,
         Prev,
         Next,
+        Shuffle,
+        RepeatAll,
+        RepeatOne,
         Search,
         Settings,
         Playlist,
@@ -121,7 +124,7 @@ namespace ChillWithYou.KugouMusic.UI.Theme
         {
             public const float WindowWidth = 780f;
             public const float WindowHeight = 560f;
-            public const float MiniWidth = 380f;
+            public const float MiniWidth = 436f;
             public const float MiniHeight = 76f;
             public const float ShadowPad = 14f;
 
@@ -517,6 +520,9 @@ namespace ChillWithYou.KugouMusic.UI.Theme
                 case IconCode.Pause:       mdl2 = "\uE769"; fallback = "❚❚"; break;
                 case IconCode.Prev:        mdl2 = "\uE892"; fallback = "◀◀"; break;
                 case IconCode.Next:        mdl2 = "\uE893"; fallback = "▶▶"; break;
+                case IconCode.Shuffle:     mdl2 = "\uE8B1"; fallback = "⇄"; break;
+                case IconCode.RepeatAll:   mdl2 = "\uE8EE"; fallback = "↻"; break;
+                case IconCode.RepeatOne:   mdl2 = "\uE8ED"; fallback = "1↻"; break;
                 case IconCode.Search:      mdl2 = "\uE721"; fallback = "搜"; break;
                 case IconCode.Settings:    mdl2 = "\uE713"; fallback = "设"; break;
                 case IconCode.Playlist:    mdl2 = "\uE8FD"; fallback = "≡"; break;

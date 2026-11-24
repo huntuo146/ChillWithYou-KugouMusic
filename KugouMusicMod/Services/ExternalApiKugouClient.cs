@@ -1401,12 +1401,12 @@ namespace ChillWithYou.KugouMusic.Services
             CancellationToken ct,
             bool noCache = false)
         {
-            string url = BuildUrl(path, args, noCache);
             if (Plugin.Gateway != null)
             {
-                await Plugin.Gateway.WaitUntilReadyAsync(url, ct);
+                await Plugin.Gateway.WaitUntilReadyAsync(_baseUrl, ct);
             }
 
+            string url = BuildUrl(path, args, noCache);
             HttpResponseData response = await _http.GetAsync(url, BuildHeaders(), ct);
 
             if (response == null)
@@ -1442,7 +1442,10 @@ namespace ChillWithYou.KugouMusic.Services
 
         private string BuildUrl(string path, IDictionary<string, string> args, bool noCache)
         {
-            var builder = new StringBuilder(_baseUrl);
+            string effectiveBase = Plugin.Gateway != null
+                ? Plugin.Gateway.ResolveEffectiveBaseUrl(_baseUrl)
+                : _baseUrl;
+            var builder = new StringBuilder(effectiveBase);
             if (!path.StartsWith("/", StringComparison.Ordinal))
             {
                 builder.Append('/');

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using ChillWithYou.KugouMusic.Models;
 using ChillWithYou.KugouMusic.UI.Theme;
 using UnityEngine;
+using UnityEngine.EventSystems;
 
 namespace ChillWithYou.KugouMusic.UI.Widgets
 {
@@ -33,7 +34,12 @@ namespace ChillWithYou.KugouMusic.UI.Widgets
     internal static class KugouWidgets
     {
         private static readonly Dictionary<int, float> DangerConfirmUntil = new Dictionary<int, float>();
+        private static readonly RectOffset ZeroOffset = new RectOffset(0, 0, 0, 0);
         private static string _activeInputName = string.Empty;
+        private static GUIStyle _fieldNormalStyle;
+        private static GUIStyle _fieldMonoStyle;
+        private static GUIStyle _fieldMaskStyle;
+        private static GUIStyle _fieldMaskMonoStyle;
 
         public static bool HasFocusedInput
         {
@@ -487,15 +493,54 @@ namespace ChillWithYou.KugouMusic.UI.Widgets
                 }
             }
 
-            // 右侧小按钮先绘制拦截，防止 TextField 吞掉点击
+            bool maskPreview = options.Masked && !focused && !options.RevealPlaintext && !string.IsNullOrEmpty(current);
+            bool imeComposing = !string.IsNullOrEmpty(Input.compositionString);
+            if (focused && Event.current != null && Event.current.type == EventType.KeyDown && !imeComposing)
+            {
+                if (Event.current.keyCode == KeyCode.Return || Event.current.keyCode == KeyCode.KeypadEnter)
+                {
+                    submitted = true;
+                    Event.current.Use();
+                }
+                else if (Event.current.keyCode == KeyCode.Escape)
+                {
+                    GUI.FocusControl(null);
+                    Event.current.Use();
+                }
+            }
+
+            if (Event.current != null &&
+                Event.current.type == EventType.MouseDown &&
+                r.Contains(Event.current.mousePosition))
+            {
+                ClearUguiSelection();
+            }
+
+            // 先渲染并分配 TextField 的 ControlID：否则右侧“清空/粘贴”按钮随文本是否为空动态显隐，
+            // 会在输入第 1 个字符后挤压后移 TextField 的 ControlID，导致 keyboardControl 立即脱焦。
+            GUIStyle fieldStyle = GetFieldStyle(options.Monospace, maskPreview);
+            GUI.SetNextControlName(fullCtrlName);
+            string next = GUI.TextField(textRect, current, fieldStyle);
+
+            if (maskPreview && Event.current != null && Event.current.type == EventType.Repaint)
+            {
+                string maskedText = BuildMaskedPreview(current);
+                GUIStyle maskedSt = KugouTheme.Style(TypeToken.Mono, KugouTheme.Colors.TextSecondary, TextAnchor.MiddleLeft);
+                maskedSt.Draw(textRect, KugouTheme.Content(maskedText), false, false, false, false);
+            }
+
+            // 右侧小按钮放在 TextField 之后绘制（textRect 已为 rightActionsWidth 预留宽度，不重叠）
+            bool modifiedByAction = false;
             float cursorX = r.xMax - 6f;
             if (showClear)
             {
                 cursorX -= actionW;
                 if (IconButton(new Rect(cursorX, r.y + (r.height - 22f) * 0.5f, actionW, 22f), IconCode.Close, false, true, 11))
                 {
-                    current = string.Empty;
+                    next = string.Empty;
+                    modifiedByAction = true;
                     GUIUtility.keyboardControl = 0;
+                    GUI.FocusControl(fullCtrlName);
                     GUI.changed = true;
                 }
 
@@ -510,7 +555,8 @@ namespace ChillWithYou.KugouMusic.UI.Widgets
                     string clip = GUIUtility.systemCopyBuffer;
                     if (!string.IsNullOrEmpty(clip))
                     {
-                        current = clip.Trim();
+                        next = clip.Trim();
+                        modifiedByAction = true;
                         GUIUtility.keyboardControl = 0;
                         GUI.FocusControl(fullCtrlName);
                         GUI.changed = true;
@@ -518,38 +564,54 @@ namespace ChillWithYou.KugouMusic.UI.Widgets
                 }
             }
 
-            bool maskPreview = options.Masked && !focused && !options.RevealPlaintext && !string.IsNullOrEmpty(current);
-            if (focused && Event.current != null && Event.current.type == EventType.KeyDown)
+            return (maskPreview && !modifiedByAction) ? current : next;
+        }
+
+        private static GUIStyle GetFieldStyle(bool monospace, bool hiddenText)
+        {
+            GUIStyle baseStyle = monospace
+                ? KugouTheme.TextStyle(12, FontStyle.Normal, hiddenText ? Color.clear : KugouTheme.Colors.TextPrimary, TextAnchor.MiddleLeft, false, true)
+                : KugouTheme.TextStyle(13, FontStyle.Normal, hiddenText ? Color.clear : KugouTheme.Colors.TextPrimary, TextAnchor.MiddleLeft, false, false);
+
+            GUIStyle cached = hiddenText
+                ? (monospace ? _fieldMaskMonoStyle : _fieldMaskStyle)
+                : (monospace ? _fieldMonoStyle : _fieldNormalStyle);
+
+            if (cached == null || cached.font != baseStyle.font)
             {
-                if (Event.current.keyCode == KeyCode.Return || Event.current.keyCode == KeyCode.KeypadEnter)
+                cached = new GUIStyle(baseStyle)
                 {
-                    submitted = true;
-                    Event.current.Use();
+                    padding = ZeroOffset,
+                    margin = ZeroOffset,
+                };
+                if (hiddenText)
+                {
+                    if (monospace) _fieldMaskMonoStyle = cached;
+                    else _fieldMaskStyle = cached;
                 }
-                else if (Event.current.keyCode == KeyCode.Escape)
+                else
                 {
-                    GUI.FocusControl(null);
-                    Event.current.Use();
+                    if (monospace) _fieldMonoStyle = cached;
+                    else _fieldNormalStyle = cached;
                 }
             }
 
-            GUIStyle fieldStyle = options.Monospace
-                ? KugouTheme.TextStyle(12, FontStyle.Normal, maskPreview ? Color.clear : KugouTheme.Colors.TextPrimary, TextAnchor.MiddleLeft, false, true)
-                : KugouTheme.TextStyle(13, FontStyle.Normal, maskPreview ? Color.clear : KugouTheme.Colors.TextPrimary, TextAnchor.MiddleLeft, false, false);
-            fieldStyle.padding = new RectOffset();
-            fieldStyle.margin = new RectOffset();
+            return cached;
+        }
 
-            GUI.SetNextControlName(fullCtrlName);
-            string next = GUI.TextField(textRect, current, fieldStyle);
-
-            if (maskPreview && Event.current != null && Event.current.type == EventType.Repaint)
+        private static void ClearUguiSelection()
+        {
+            try
             {
-                string maskedText = BuildMaskedPreview(current);
-                GUIStyle maskedSt = KugouTheme.Style(TypeToken.Mono, KugouTheme.Colors.TextSecondary, TextAnchor.MiddleLeft);
-                maskedSt.Draw(textRect, KugouTheme.Content(maskedText), false, false, false, false);
+                EventSystem es = EventSystem.current;
+                if (es != null && es.currentSelectedGameObject != null)
+                {
+                    es.SetSelectedGameObject(null);
+                }
             }
-
-            return maskPreview ? current : next;
+            catch
+            {
+            }
         }
 
         public static float Badge(Rect r, string text, Color fg, Color bg, Color border, bool dot = false)
